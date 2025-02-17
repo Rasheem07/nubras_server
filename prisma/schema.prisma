@@ -1,0 +1,372 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String    @id @default(cuid())
+  username       String    @unique
+  contact        String
+  areaCode       String    @default("+971")
+  role           Role
+  lastActive     DateTime?
+  profilePicture String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  Order          Order[]
+  config         config[]
+}
+
+enum OrderType {
+  READY_MADE
+  CUSTOM_TAILORED
+}
+
+enum orderStatus {
+  confirmed
+  processing
+  tailoring
+  ready
+  delivered
+  cancelled
+}
+
+enum orderPaymentStatus {
+  NO_PAYMENT
+  PARTIAL_PAYMENT
+  FULL_PAYMENT
+}
+
+model Order {
+  InvoiceId         String             @id
+  type              OrderType
+  branch            String
+  status            orderStatus        @default(confirmed)
+  orderedFrom       String?            @default("SHOP")
+  Customer          Customer?          @relation(fields: [customerId], references: [id])
+  customerId        String
+  customerName      String
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  section           Section?           @relation(fields: [sectionName], references: [name])
+  sectionName       String
+  salesPersonName   String
+  SalesPerson       SalesPerson?       @relation(fields: [salesPersonId], references: [id])
+  salesPersonId     String
+  customerLocation  String
+  paymentStatus     orderPaymentStatus @default(NO_PAYMENT)
+  product           Service?           @relation(fields: [productName], references: [name])
+  productName       String
+  productPrice      Float
+  quantity          Int
+  totalAmount       Float
+  deliveryDate      DateTime?
+  paymentDate       DateTime?
+  user              User?              @relation(fields: [orderRegisteredBy], references: [username])
+  orderRegisteredBy String?
+  trackingToken     String
+  Transactions      Transactions[]
+  PendingAmount     Float
+  PaidAmount        Float              @default(0)
+  Employee          Employee?          @relation(fields: [assignedTo], references: [id])
+  assignedTo        String?
+  dueDate           DateTime
+  salary            salary[]
+  Measurement       Measurement[]
+  Fabric            Fabric[]
+}
+
+enum PaymentType {
+  VISA
+  CASH
+  BANK_TRANSFER
+}
+
+model Transactions {
+  id            String      @id @unique @default(cuid())
+  orderId       String
+  order         Order?      @relation(fields: [orderId], references: [InvoiceId])
+  customerId    String
+  customerName  String
+  customer      Customer?   @relation(fields: [customerId], references: [id])
+  paymentType   PaymentType
+  amount        Float
+  status        String      @default("PENDING")
+  paymentDate   DateTime    @default(now())
+  paymentMethod String
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+model SalesPerson {
+  id               String   @id @default(cuid())
+  name             String   @unique
+  orders           Order[]
+  totalOrders      Int      @default(0)
+  totalSalesAmount Float    @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model Customer {
+  id               String             @id @unique @default(cuid())
+  name             String
+  phone            String
+  location         String
+  totalOrders      Int                @default(0)
+  lastOrder        DateTime?
+  totalSpent       Float              @default(0)
+  orders           Order[]
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  Transactions     Transactions[]
+  CommunicationLog CommunicationLog[]
+}
+
+enum ServiceType {
+  READY_MADE
+  CUSTOM_MADE
+  BOTH
+}
+
+model Service {
+  id                String             @id @default(cuid())
+  type              ServiceType
+  name              String             @unique
+  price             Float
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  Section           Section?           @relation(fields: [sectionName], references: [name])
+  totalQuantitySold Int                @default(0)
+  totalSalesAmount  Float              @default(0)
+  sectionName       String
+  Orders            Order[] // Links orders
+  Measurements      Measurement[] // Custom measurements
+  Inventory         ProductInventory[] // Inventory entries
+  ProductMovement   ProductMovement[] // Tracks movements
+}
+
+model Section {
+  id                String    @id @default(cuid())
+  name              String    @unique
+  products          Service[]
+  totalQuantitySold Int       @default(0)
+  totalSalesAmount  Float     @default(0)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  Order             Order[]
+}
+
+model Measurement {
+  id             String   @id @default(uuid())
+  orderId        String
+  order          Order?   @relation(fields: [orderInvoiceId], references: [InvoiceId])
+  productName    String
+  product        Service? @relation(fields: [productName], references: [name])
+  LengthInFront          Float
+  lengthBehind          Float
+  shoulder           Float
+  hands         Float
+  neck         Float
+  middle       Float
+  chest Float
+  endOfShow Float
+  fabricId       String
+  fabric         Fabric?  @relation(fields: [fabricId], references: [id])
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  orderInvoiceId String
+}
+
+model Employee {
+  id        String       @id @default(cuid())
+  name      String
+  role      EmployeeRole
+  contact   String
+  areaCode  String       @default("+971")
+  orders    Order[]
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  salary    salary[]
+}
+
+model salary {
+  id         String   @id @default(cuid())
+  orderId    String
+  order      Order    @relation(fields: [orderId], references: [InvoiceId])
+  employeeId String
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  amount     Float
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+enum EmployeeRole {
+  MASTER_TAILOR
+  TAILOR
+  DESIGNER
+  MANAGER
+}
+
+model ProductMovement {
+  id           String           @id @default(cuid()) // Unique ID for the movement record
+  productName  String // Foreign key to Product
+  product      Service          @relation(fields: [productName], references: [name])
+  movementType MovementType // Enum for sale, restock, return, etc.
+  quantity     Int // Number of items moved
+  movementDate DateTime         @default(now()) // Timestamp for when the movement occurred
+  inventoryId  String // Foreign key to inventory
+  inventory    ProductInventory @relation(fields: [inventoryId], references: [id])
+  orderId      String? // Nullable, for linking to orders
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+}
+
+enum MovementType {
+  SALE
+  RESTOCK
+  RETURN
+  ADJUSTMENT
+}
+
+model ProductInventory {
+  id                String            @id @default(cuid())
+  productName       String
+  product           Service           @relation(fields: [productName], references: [name])
+  ProductMovement   ProductMovement[] // Movement logs related to inventory
+  productRestock    ProductRestock[] // Restocks for the product
+  costingPrice      Int
+  sellingPrice      Int
+  totalSalesAmount  Int               @default(0)
+  totalQuantitySold Int               @default(0)
+  quantityAvailable Int               @default(0)
+  reorderPoint      Int               @default(0)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+}
+
+model ProductRestock {
+  id            String           @id @default(cuid())
+  inventoryId   String
+  inventory     ProductInventory @relation(fields: [inventoryId], references: [id])
+  quantity      Int
+  supplierName  String
+  purchasePrice Float
+  totalCost     Float // Can be computed: totalCost = purchasePrice * quantity
+  date          DateTime         @default(now())
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+}
+
+model AuditLog {
+  id          String   @id @default(cuid()) // Unique ID for the log entry
+  actionType  String // Enum for action type (e.g., inventory adjustment, restock)
+  description String // Description of the action
+  createdAt   DateTime @default(now())
+}
+
+enum Role {
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+model FabricInventory {
+  id                String           @id @default(cuid())
+  fabricName        String           @unique
+  type              String
+  color             String
+  costingPrice      Int
+  sellingPrice      Int
+  quantityAvailable Int              @default(0)
+  reorderPoint      Int              @default(0)
+  totalSalesAmount  Int              @default(0)
+  totalQuantitySold Int              @default(0)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  supplierId        String?
+  supplier          Supplier?        @relation(fields: [supplierId], references: [id])
+  FabricMovement    FabricMovement[]
+}
+
+model Fabric {
+  id             String        @id @default(cuid()) // Unique ID for the movement record
+  fabricName     String
+  type           String
+  color          String
+  quantity       Int
+  order          Order?        @relation(fields: [orderInvoiceId], references: [InvoiceId])
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  orderInvoiceId String
+  Measurement    Measurement[]
+}
+
+model FabricMovement {
+  id                String           @id @default(cuid()) // Unique ID for the movement record
+  movementType      MovementType // Enum for sale, restock, return, etc.
+  quantity          Int // Number of items moved
+  movementDate      DateTime         @default(now()) // Timestamp for when the movement occurred
+  inventoryId       String // Foreign key to inventory
+  orderId           String? // Nullable, for linking to orders
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  FabricInventory   FabricInventory? @relation(fields: [fabricInventoryId], references: [id])
+  fabricInventoryId String?
+}
+
+model Supplier {
+  id              String            @id @default(cuid())
+  name            String
+  contact         String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  FabricInventory FabricInventory[]
+}
+
+model CommunicationLog {
+  id         String              @id @default(cuid())
+  customerId String
+  customer   Customer            @relation(fields: [customerId], references: [id])
+  message    String
+  method     CommunicationMethod
+  date       DateTime            @default(now())
+}
+
+enum CommunicationMethod {
+  CALL
+  EMAIL
+  SMS
+  WHATSAPP
+  IN_PERSON
+}
+
+model OTP {
+  id        String   @id @default(cuid())
+  contact   String
+  OTP       String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+}
+
+model config {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique
+  value     String
+  encrypted Boolean  @default(true)
+  createdBy User     @relation(fields: [userId], references: [id])
+  userId    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
