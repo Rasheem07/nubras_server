@@ -35,6 +35,10 @@ import { StripeService } from './payment/payment.service';
 import { ConfigController } from './config/config.controller';
 import { ConfigService } from './config/config.service';
 import { ConfigModule } from './config/config.module';
+import { InvoiceModule } from './api/invoice.controller';
+import { DashboardModule } from './analytics.controller';
+import { ServeStaticModule } from '@nestjs/serve-static';
+import { join } from 'path';
 
 @Module({
   imports: [AuthModule, AdminModule, OrdersModule, CustomersModule, SalespersonModule, TransactionsModule, MeasurementModule, InventoryModule, TailorModule,
@@ -43,10 +47,15 @@ import { ConfigModule } from './config/config.module';
       ttl: 30000, // Time-to-live in seconds (1 minute)
       limit: 20, // Max 10 requests per TTL per IP
     }]),
+    ServeStaticModule.forRoot({
+      rootPath: join(__dirname, '..', 'public'),
+    }),
     RoleModule,
     OrderModule,
     PaymentModule,
-    ConfigModule
+    ConfigModule,
+    InvoiceModule,
+    DashboardModule,
   ],
   controllers: [AppController, SalespersonController, TransactionsController, InventoryController, RoleController, ServiceController, OrderController, StripeController, ConfigController],
   providers: [AppService, SalespersonService, TransactionsService, InventoryService, ServiceService, {provide: APP_GUARD, useClass: ThrottlerGuard}, OrderService, StripeService, ConfigService],

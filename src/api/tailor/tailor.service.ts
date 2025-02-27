@@ -19,16 +19,13 @@ export class TailorService {
                 InvoiceId: true,
                 branch: true,
                 status: true,
-                productName: true,
-                productPrice: true, // Add price for reference
-                quantity: true, // Add quantity
+                items: true,
                 totalAmount: true, // Add total amount for the order
                 PendingAmount: true,
                 PaidAmount: true, // Add paid amount for tracking
-                dueDate: true,
+                PaymentdueDate: true,
                 Customer: true,
-                Measurement: true, // Include measurements
-                Fabric: true, // Include fabric details
+                fabric: true, // Include fabric details
                 assignedTo: true, // To track which tailor is assigned
             }
         });
@@ -36,7 +33,7 @@ export class TailorService {
     }
     
 
-    async getOrderDetails(id: string) {
+    async getOrderDetails(id: number) {
         const order = await prisma.order.findUnique({
             where: {
                 InvoiceId: id,
@@ -45,16 +42,15 @@ export class TailorService {
                 InvoiceId: true,
                 branch: true,
                 status: true,
-                productName: true,
-                dueDate: true,
+                items: true,
+                PaymentdueDate: true,
                 Customer: {
                     select: {
                         name: true,
                         phone: true,
                     }
                 },
-                Measurement:true, 
-                Fabric: true,
+                fabric: true,
                 Transactions: true   
             }
         });

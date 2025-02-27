@@ -1,236 +1,672 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
-import { Fabric, FabricInventory, Order } from '@prisma/client';
+import { Fabric, item, Measurement, Order, Prisma, Transactions } from '@prisma/client';
 import * as crypto from 'crypto';
 import { prisma } from 'src/lib/prisma';
+
 @Injectable()
-
 export class OrdersService {
+  private prisma = prisma;
 
-    private prisma = prisma;
-    async getOrders(): Promise<Order[]> {
-        return prisma.order.findMany();
+  // Basic CRUD operations
+  async getOrders(): Promise<Order[]> {
+    return this.prisma.order.findMany({
+      include: {
+        items: true,
+        Customer: true,
+        SalesPerson: true,
+        Transactions: true
+      }
+    });
+  }
+
+  async getOrdersByCustomerId(customerId: string): Promise<Order[]> {
+    return this.prisma.order.findMany({
+      where: { customerId },
+      include: { items: true }
+    });
+  }
+
+  async getOrdersBySalespersonId(salespersonId: string): Promise<Order[]> {
+    return this.prisma.order.findMany({
+      where: { salesPersonId: salespersonId },
+      include: { items: true }
+    });
+  }
+
+  async getOrderById(InvoiceId: number): Promise<Order> {
+    return this.prisma.order.findUnique({
+      where: { InvoiceId },
+      include: { items: true }
+    });
+  }
+
+
+  async createOrderWithRelations(data: {
+    order: Order,
+    items: item[],
+    transactions?: Transactions[],
+    fabrics?: Fabric[],
+    measurements?: Measurement[]
+  }): Promise<Order> {
+    // Core data validation (synchronous, in-memory)
+    const validationErrors = this.validateOrderData(data);
+    if (validationErrors.length) {
+      throw new HttpException(validationErrors.join(', '), HttpStatus.BAD_REQUEST);
     }
-
-    async getOrdersByCustomerId(customerId: string): Promise<Order[]> {
-        return prisma.order.findMany({ where: { customerId } });
-    }
-
-    async getOrdersBySalespersonId(salespersonId: string): Promise<Order[]> {
-        return prisma.order.findMany({ where: { salesPersonId: salespersonId } });
-    }
-
-
-
-
-    async createOrder(order: Order, fabrics: Fabric[]): Promise<Order> {
-        console.log(order);
-
-        // Validate required fields
-        const requiredFields = ['InvoiceId', 'branch', 'customerName', 'customerLocation', 'productName', 'salesPersonName', 'quantity', 'totalAmount'];
-        const missingFields = requiredFields.filter(field => !order[field]);
-        if (missingFields.length > 0) {
-            throw new HttpException(`Missing required fields: ${missingFields.join(', ')}`, HttpStatus.BAD_REQUEST);
+  
+    // Create minimal critical path transaction (order only)
+    const newOrder = await this.prisma.$transaction(async (tx) => {
+      // Parallel prefetch only critical data
+      const [customer, salesPerson] = await Promise.all([
+        tx.customer.findFirst({ 
+          where: { name: data.order.customerName },
+          select: { id: true, name: true }
+        }),
+        tx.salesPerson.findUnique({ 
+          where: { name: data.order.salesPersonName },
+          select: { id: true, name: true }
+        })
+      ]);
+  
+      if (!customer || !salesPerson) {
+        throw new HttpException('Customer or SalesPerson not found', HttpStatus.NOT_FOUND);
+      }
+  
+      const trackingToken = this.generateTrackingTokenSync(customer.name);
+      
+      // Calculate payment info synchronously
+      const totalPaid = data.transactions?.reduce((sum, t) => sum + t.amount, 0) || 0;
+      const paymentStatus = totalPaid >= data.order.totalAmount 
+        ? "FULL_PAYMENT" 
+        : totalPaid > 0 ? "PARTIAL_PAYMENT" : "NO_PAYMENT";
+  
+      // Create only order record in critical path
+      return tx.order.create({
+        data: {
+          ...data.order,
+          customerId: customer.id,
+          salesPersonId: salesPerson.id,
+          trackingToken,
+          PendingAmount: data.order.totalAmount - totalPaid,
+          PaidAmount: totalPaid,
+          paymentStatus,
+          ...(paymentStatus === "FULL_PAYMENT" ? { paymentDate: new Date() } : {})
         }
-
-        // Check entity existence
-        const [service, customer, salesPerson] = await Promise.all([
-            prisma.service.findUnique({ where: { name: order.productName } }),
-            prisma.customer.findFirst({ where: { name: order.customerName } }),
-            prisma.salesPerson.findFirst({ where: { name: order.salesPersonName } })
-        ]);
-
-        const missingEntities = [];
-        if (!service) missingEntities.push(`Service: ${order.productName}`);
-        if (!customer) missingEntities.push(`Customer: ${order.customerName}`);
-        if (!salesPerson) missingEntities.push(`Sales Person: ${order.salesPersonName}`);
-
-        if (missingEntities.length > 0) {
-            throw new HttpException({ type: "error", message: `Missing entities: ${missingEntities.join(', ')}` }, HttpStatus.NOT_FOUND);
+      });
+    }, {
+      maxWait: 1000,
+      timeout: 2000,
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
+    });
+  
+    // Process remaining work in background without blocking
+    setImmediate(() => {
+      this.processOrderRelatedData(newOrder, data).catch(error => {
+        console.error(`Background processing for order ${newOrder.InvoiceId} failed:`, error);
+        // Log error to database for visibility
+        this.prisma.order.delete({
+          where: {
+            InvoiceId: newOrder.InvoiceId
+          }
+        })
+        this.prisma.auditLog.create({
+          data: {
+            actionType: "Background Processing Failed! Order has been deleted",
+            description: `Order ${newOrder.InvoiceId} background processing failed: ${error.message}`
+          }
+        }).catch(e => console.error("Failed to log error:", e));
+      });
+    });
+  
+    return newOrder;
+  }
+  
+  // Decoupled background processing
+  private async processOrderRelatedData(newOrder: Order, data: any): Promise<void> {
+    try {
+      // Process everything in parallel where possible
+      await Promise.all([
+        this.processOrderItems(newOrder.InvoiceId, data.items),
+        this.processFabricsAndMeasurements(newOrder.InvoiceId, data.fabrics, data.measurements),
+        this.processTransactions(newOrder.InvoiceId, data.transactions),
+        this.updateStatistics(newOrder.InvoiceId, data)
+      ]);
+      
+      // Log successful completion
+      await this.prisma.auditLog.create({
+        data: {
+          actionType: "Order Relations Processed",
+          description: `Order relations for Invoice ID ${newOrder.InvoiceId} successfully processed.`
         }
-
-        // Inventory validation
-        if (order.type === "READY_MADE") {
-            await this.checkProductInventory(order.productName, order.quantity);
-        } else if (order.type === "CUSTOM_TAILORED") {
-            for (const fabric of fabrics) {
-                await this.checkFabricsInventory(fabrics, fabric.quantity);
-            }
-        }
-
-        // Create Order
-        const trackingToken = await this.generateTrackingToken(order.customerName);
-        const newOrder = await prisma.order.create({
-            data: { ...order, customerId: customer.id, salesPersonId: salesPerson.id, trackingToken }
+      });
+    } catch (error) {
+      // Retry once with sequential processing if parallel fails
+      try {
+        await this.processOrderItems(newOrder.InvoiceId, data.items);
+        await this.processFabricsAndMeasurements(newOrder.InvoiceId, data.fabrics, data.measurements);
+        await this.processTransactions(newOrder.InvoiceId, data.transactions);
+        await this.updateStatistics(newOrder.InvoiceId, data);
+        
+        await this.prisma.auditLog.create({
+          data: {
+            actionType: "Order Relations Processed (Retry)",
+            description: `Order relations for Invoice ID ${newOrder.InvoiceId} processed after retry.`
+          }
         });
-
-        // Update related records in parallel
-        await Promise.all([
-            prisma.service.update({ where: { name: order.productName }, data: { totalQuantitySold: { increment: order.quantity }, totalSalesAmount: { increment: order.totalAmount } } }),
-            prisma.section.update({ where: { name: order.sectionName }, data: { totalSalesAmount: { increment: order.totalAmount }, totalQuantitySold: { increment: order.quantity } } }),
-            prisma.customer.update({ where: { id: customer.id }, data: { totalOrders: { increment: 1 }, totalSpent: { increment: order.totalAmount } } }),
-            prisma.salesPerson.update({ where: { id: salesPerson.id }, data: { totalOrders: { increment: 1 }, totalSalesAmount: { increment: order.totalAmount } } })
-        ]);
-
-        // Update Inventory
-        await this.updateInventory(order, fabrics);
-        return newOrder;
+      } catch (retryError) {
+        throw retryError; // Let caller handle final failure
+      }
     }
-
-    private async checkProductInventory(productName: string, quantity: number) {
-        const productInventory = await prisma.productInventory.findFirst({ where: { productName } });
-        if (!productInventory || productInventory.quantityAvailable < quantity) {
-            throw new HttpException({ type: 'error', message: `insufficient stock for ${productName}, Available quantity: ${productInventory.quantityAvailable}, Requested quantity: ${quantity} ` }, HttpStatus.NOT_FOUND);
+  }
+  
+  // Strongly typed validation before any DB calls
+  private validateOrderData(data: any): string[] {
+    const errors: string[] = [];
+    
+    if (!data.order?.customerName) errors.push('Customer name is required');
+    if (!data.order?.salesPersonName) errors.push('Sales person name is required');
+    if (!data.order?.totalAmount || data.order.totalAmount <= 0) errors.push('Valid total amount is required');
+    
+    // Validate items have required fields synchronously
+    if (data.items?.length) {
+      data.items.forEach((item: any, idx: number) => {
+        if (!item.productName) errors.push(`Item ${idx+1} missing product name`);
+        if (!item.quantity || item.quantity <= 0) errors.push(`Item ${idx+1} has invalid quantity`);
+      });
+    }
+    
+    return errors;
+  }
+  
+  // Process items with optimistic inventory validation
+  private async processOrderItems(orderId: number, items?: item[]): Promise<void> {
+    if (!items?.length) return;
+    
+    // Bulk create items
+    await this.prisma.item.createMany({
+      data: items.map(item => ({
+        ...item,
+        orderInvoiceId: orderId
+      }))
+    });
+    
+    // Handle inventory updates only for ready-made items
+    const readyMadeItems = items.filter(i => i.type === "READY_MADE");
+    if (!readyMadeItems.length) return;
+    
+    // Use optimal batch size to balance parallelism
+    const BATCH_SIZE = 10;
+    const batches = [];
+    
+    // Group by product for efficient inventory updates
+    const productGroups = readyMadeItems.reduce((acc, item) => {
+      acc[item.productName] = (acc[item.productName] || 0) + item.quantity;
+      return acc;
+    }, {} as Record<string, number>);
+    
+    const productEntries = Object.entries(productGroups);
+    
+    // Process inventory updates in parallel batches
+    for (let i = 0; i < productEntries.length; i += BATCH_SIZE) {
+      const batch = productEntries.slice(i, i + BATCH_SIZE);
+      batches.push(Promise.all(batch.map(async ([productName, quantity]) => {
+        try {
+          // Get inventory first
+          const inventory = await this.prisma.productInventory.findFirst({
+            where: { productName },
+            select: { id: true, quantityAvailable: true }
+          });
+          
+          if (!inventory || inventory.quantityAvailable < quantity) {
+            throw new Error(`Insufficient stock for ${productName}`);
+          }
+          
+          // Update inventory
+          await this.prisma.productInventory.update({
+            where: { id: inventory.id },
+            data: { quantityAvailable: { decrement: quantity } }
+          });
+          
+          // Record movement
+          await this.prisma.productMovement.create({
+            data: {
+              productName,
+              quantity,
+              movementType: "SALE",
+              movementDate: new Date(),
+              inventoryId: inventory.id,
+              orderId
+            }
+          });
+        } catch (error) {
+          console.error(`Inventory update failed for ${productName}:`, error);
+          // Log issue but continue processing other items
+          await this.prisma.auditLog.create({
+            data: {
+              actionType: "Inventory Update Failed",
+              description: `Failed to update inventory for ${productName} in order ${orderId}: ${error.message}`
+            }
+          });
         }
+      })));
     }
-
-    private async checkFabricsInventory(fabrics: Fabric[], quantity: number) {
-        for (const fabric of fabrics) {
-        console.log(fabric)
-            const fabricInventory = await prisma.fabricInventory.findFirst({ where: { fabricName: fabric.fabricName, type: fabric.type, color: fabric.color } });
-            if(!fabricInventory) {
-             throw new HttpException({type: 'error', message: `${fabric.fabricName} (${fabric.type}-${fabric.color}) Not found in the inventory`}, HttpStatus.NOT_FOUND)
-            }
-            console.log('fabric quantity in inventory', fabricInventory.quantityAvailable)
-            if (!fabricInventory || fabricInventory.quantityAvailable < quantity) {
-                throw new HttpException({
-                    type: 'error', message: `Fabric does not exist or insufficient stock!
-                    Available fabrics quantity: ${fabricInventory.quantityAvailable}
-                    requested fabrics quantity: ${fabric.quantity}`
-                }, HttpStatus.NOT_FOUND);
-            }
-        }
-    }
-
-    private async updateInventory(order: Order, fabrics: Fabric[]) {
-        if (order.type === "READY_MADE") {
-            const product = await prisma.productInventory.findFirst({ where: { productName: order.productName } });
-            if (!product) {
-                throw new HttpException('Product not found in inventory', HttpStatus.NOT_FOUND);
-            }
-            await prisma.productInventory.update({
-                where: { id: product.id },
-                data: { totalSalesAmount: { decrement: order.totalAmount }, quantityAvailable: { decrement: order.quantity } }
+    
+    await Promise.all(batches);
+  }
+  
+  // Optimized fabric and measurement processing
+  private async processFabricsAndMeasurements(
+    orderId: number, 
+    fabrics?: Fabric[], 
+    measurements?: Measurement[]
+  ): Promise<void> {
+    // Process in parallel
+    await Promise.all([
+      // Handle fabrics
+      (async () => {
+        if (!fabrics?.length) return;
+        
+        // Create a map for item lookup
+        const items = await this.prisma.item.findMany({
+          where: { orderInvoiceId: orderId },
+          select: { id: true, productName: true }
+        });
+        
+        const itemMap = new Map(items.map(item => [item.productName, item.id]));
+        
+        // Process fabrics in batches
+        const BATCH_SIZE = 20;
+        for (let i = 0; i < fabrics.length; i += BATCH_SIZE) {
+          const batch = fabrics.slice(i, i + BATCH_SIZE);
+          
+          // Process each fabric in parallel
+          await Promise.all(batch.map(async (fabric) => {
+            // Get inventory
+            const inventory = await this.prisma.fabricInventory.findFirst({
+              where: {
+                fabricName: fabric.fabricName,
+                type: fabric.type,
+                color: fabric.color
+              },
+              select: { id: true, quantityAvailable: true }
             });
-        } else {
-            await Promise.all(fabrics.map(fabric =>
-                prisma.fabricInventory.update({
-                    where: { fabricName: (fabric as any).name },
-                    data: { totalSalesAmount: { decrement: order.totalAmount }, quantityAvailable: { decrement: order.quantity } }
-                })
-            ));
+            
+            if (!inventory || inventory.quantityAvailable < fabric.quantity) {
+              throw new HttpException(
+                `Insufficient fabric stock for ${fabric.fabricName} (${fabric.type}-${fabric.color})`,
+                HttpStatus.BAD_REQUEST
+              );
+            }
+            
+            // Update inventory
+            await this.prisma.fabricInventory.update({
+              where: { id: inventory.id },
+              data: { quantityAvailable: { decrement: fabric.quantity } }
+            });
+            
+            // Find item ID
+            const itemId = fabric.itemId || itemMap.get(fabric.itemId || "");
+            
+            // Create fabric record
+            await this.prisma.fabric.create({
+              data: {
+                fabricName: fabric.fabricName,
+                type: fabric.type,
+                color: fabric.color,
+                quantity: fabric.quantity,
+                orderInvoiceId: orderId,
+                itemId
+              }
+            });
+          }));
         }
+      })(),
+      
+      // Handle measurements
+      (async () => {
+        if (!measurements?.length) return;
+        
+        await this.prisma.measurement.createMany({
+          data: measurements.map(measurement => ({
+            ...measurement,
+            orderInvoiceId: orderId
+          }))
+        });
+      })()
+    ]);
+  }
+  
+  // Process transactions
+  private async processTransactions(
+    orderId: number, 
+    transactions?: Transactions[]
+  ): Promise<void> {
+    if (!transactions?.length) return;
+    
+    // Get customer info - needed for transaction records
+    const order = await this.prisma.order.findUnique({
+      where: { InvoiceId: orderId },
+      select: { customerId: true, Customer: { select: { name: true } } }
+    });
+    
+    if (!order) return;
+    
+    // Create transactions
+    await this.prisma.transactions.createMany({
+      data: transactions.map(transaction => ({
+        ...transaction,
+        customerId: order.customerId,
+        customerName: order.Customer.name,
+        orderId
+      }))
+    });
+  }
+  
+  // Update statistics in separate transaction
+  private async updateStatistics(orderId: number, data: any): Promise<void> {
+    // Extract customer and sales info 
+    const order = await this.prisma.order.findUnique({
+      where: { InvoiceId: orderId },
+      select: { 
+        customerId: true, 
+        salesPersonId: true, 
+        totalAmount: true
+      }
+    });
+    
+    if (!order || !data.items?.length) return;
+    
+    // Pre-calculate all totals in memory
+    const productTotals = new Map<string, {quantity: number, amount: number}>();
+    const sectionTotals = new Map<string, {quantity: number, amount: number}>();
+    
+    for (const item of data.items) {
+      // For products
+      const productKey = item.productName;
+      const productTotal = productTotals.get(productKey) || {quantity: 0, amount: 0};
+      productTotal.quantity += item.quantity;
+      productTotal.amount += item.productPrice * item.quantity;
+      productTotals.set(productKey, productTotal);
+      
+      // For sections
+      if (item.sectionName) {
+        const sectionKey = item.sectionName;
+        const sectionTotal = sectionTotals.get(sectionKey) || {quantity: 0, amount: 0};
+        sectionTotal.quantity += item.quantity;
+        sectionTotal.amount += item.productPrice * item.quantity;
+        sectionTotals.set(sectionKey, sectionTotal);
+      }
     }
-
-
-    async getOrderById(InvoiceId: string): Promise<Order> {
-        return prisma.order.findUnique({ where: { InvoiceId } });
+    
+    // Update customer stats
+    await this.prisma.customer.update({
+      where: { id: order.customerId },
+      data: {
+        totalOrders: { increment: 1 },
+        totalSpent: { increment: order.totalAmount }
+      }
+    });
+    
+    // Update sales person stats
+    await this.prisma.salesPerson.update({
+      where: { id: order.salesPersonId },
+      data: {
+        totalOrders: { increment: 1 },
+        totalSalesAmount: { increment: order.totalAmount }
+      }
+    });
+    
+    // Update product stats - in batches
+    const productBatches = [];
+    const productEntries = [...productTotals.entries()];
+    
+    for (let i = 0; i < productEntries.length; i += 5) {
+      const batch = productEntries.slice(i, i + 5);
+      productBatches.push(Promise.all(batch.map(([productName, totals]) =>
+        this.prisma.service.update({
+          where: { name: productName },
+          data: {
+            totalQuantitySold: { increment: totals.quantity },
+            totalSalesAmount: { increment: totals.amount }
+          }
+        })
+      )));
     }
-
-    async updateOrder(InvoiceId: string, order: Order): Promise<Order> {
-        console.log(order);
-        return prisma.order.update({ where: { InvoiceId }, data: order });
+    
+    // Update section stats - in batches
+    const sectionBatches = [];
+    const sectionEntries = [...sectionTotals.entries()];
+    
+    for (let i = 0; i < sectionEntries.length; i += 5) {
+      const batch = sectionEntries.slice(i, i + 5);
+      sectionBatches.push(Promise.all(batch.map(([sectionName, totals]) =>
+        this.prisma.section.update({
+          where: { name: sectionName },
+          data: {
+            totalQuantitySold: { increment: totals.quantity },
+            totalSalesAmount: { increment: totals.amount }
+          }
+        })
+      )));
     }
+    
+    // Execute all batches
+    await Promise.all([
+      ...productBatches, 
+      ...sectionBatches
+    ]);
+  }
+  
+  private generateTrackingTokenSync(customerName: string): string {
+    const prefix = customerName.substring(0, 3).toUpperCase();
+    const timestamp = Date.now().toString(36);
+    const randomStr = Math.random().toString(36).substring(2, 6);
+    return `${prefix}-${timestamp}-${randomStr}`;
+  }
 
+  // Update order
+  async updateOrder(InvoiceId: number, order: Order): Promise<Order> {
+    return this.prisma.order.update({
+      where: { InvoiceId: Number(InvoiceId) },
+      data: order,
+      include: { items: true }
+    });
+  }
 
-    async cancelOrder(InvoiceId: string): Promise<Order> {
-        const order = await prisma.order.update({ where: { InvoiceId }, data: { status: 'cancelled' } });
+  // Cancel order
+  async cancelOrder(InvoiceId: number): Promise<Order> {
+    return this.prisma.$transaction(async (tx) => {
+      // Get the order with items
+      const order = await tx.order.findUnique({
+        where: { InvoiceId: Number(InvoiceId) },
+        include: { items: true }
+      });
 
+      if (!order) {
+        throw new HttpException('Order not found', HttpStatus.NOT_FOUND);
+      }
 
-        // Update related records
-        await prisma.service.update({
-            where: { name: order.productName },
-            data: {
-                totalQuantitySold: { decrement: order.quantity },
-                totalSalesAmount: { decrement: order.totalAmount }
+      // Update order status
+      const updatedOrder = await tx.order.update({
+        where: { InvoiceId: Number(InvoiceId) },
+        data: { status: 'cancelled' },
+        include: { items: true }
+      });
+
+      // Revert product and inventory changes for each item
+      if (order.items && order.items.length > 0) {
+        await Promise.all(
+          order.items.map(async (item) => {
+            // Update product stats
+            await tx.service.update({
+              where: { name: item.productName },
+              data: {
+                totalQuantitySold: { decrement: item.quantity },
+                totalSalesAmount: { decrement: item.productPrice * item.quantity }
+              }
+            });
+
+            // Update section stats
+            await tx.section.update({
+              where: { name: item.sectionName },
+              data: {
+                totalQuantitySold: { decrement: item.quantity },
+                totalSalesAmount: { decrement: item.productPrice * item.quantity }
+              }
+            });
+
+            // Revert inventory changes for ready-made items
+            if (item.type === "READY_MADE") {
+              const productInventory = await tx.productInventory.findFirst({
+                where: { productName: item.productName }
+              });
+
+              if (productInventory) {
+                await tx.productInventory.update({
+                  where: { id: productInventory.id },
+                  data: { quantityAvailable: { increment: item.quantity } }
+                });
+
+                // Record movement
+                await tx.productMovement.create({
+                  data: {
+                    product: { connect: { name: item.productName } }, // Connecting by foreign key
+                    quantity: item.quantity,
+                    movementType: "RETURN",
+                    movementDate: new Date(),
+                    inventory: { connect: { id: productInventory.id } }, // Assuming inventoryId is available
+                    orderId: item.orderInvoiceId, // Optional linking to order if available
+                  },
+                });
+
+              }
             }
 
-        });
+            // Restore fabric inventory
+            const fabrics = await tx.fabric.findMany({
+              where: { itemId: item.id }
+            });
 
-        await prisma.section.update({
-            where: { name: order.sectionName },
-            data: {
-                totalSalesAmount: { decrement: order.totalAmount },
-                totalQuantitySold: { decrement: order.quantity }
+            for (const fabric of fabrics) {
+              const fabricInventory = await tx.fabricInventory.findFirst({
+                where: {
+                  fabricName: fabric.fabricName,
+                  type: fabric.type,
+                  color: fabric.color
+                }
+              });
+
+              if (fabricInventory) {
+                await tx.fabricInventory.update({
+                  where: { id: fabricInventory.id },
+                  data: { quantityAvailable: { increment: fabric.quantity } }
+                });
+              }
             }
+          })
+        );
+      }
 
-        });
-
-        await prisma.customer.update({
-            where: { id: order.customerId },
-
-            data: {
-                totalOrders: { decrement: 1 },
-                totalSpent: { decrement: order.totalAmount },
-            }
-        });
-
-
-        await prisma.salesPerson.update({
-            where: { id: order.salesPersonId },
-            data: {
-                totalOrders: { decrement: 1 },
-                totalSalesAmount: { decrement: order.totalAmount }
-
-            }
-
-        });
-
-        return order;
-    }
-
-
-    async deleteOrder(InvoiceId: string): Promise<Order> {
-        return prisma.order.delete({ where: { InvoiceId } });
-    }
-
-    async generateTrackingToken(userId: string) {
-
-        const token = crypto.randomBytes(32).toString('hex');
-        return token;
-
-    }
-
-    async trackingOrder(trackingToken: string): Promise<Order> {
-        const order = await prisma.order.findFirst({ where: { trackingToken: trackingToken } });
-        if (!order) {
-            throw new HttpException("Order not found", HttpStatus.NOT_FOUND);
+      // Update customer stats
+      await tx.customer.update({
+        where: { id: order.customerId },
+        data: {
+          totalOrders: { decrement: 1 },
+          totalSpent: { decrement: order.totalAmount }
         }
-        return order;
+      });
+
+      // Update salesperson stats
+      await tx.salesPerson.update({
+        where: { id: order.salesPersonId },
+        data: {
+          totalOrders: { decrement: 1 },
+          totalSalesAmount: { decrement: order.totalAmount }
+        }
+      });
+
+      // Create audit log
+      await tx.auditLog.create({
+        data: {
+          actionType: "Order Cancelled",
+          description: `Order ${InvoiceId} has been cancelled`
+        }
+      });
+
+      return updatedOrder;
+    });
+  }
+
+  // Delete order
+  async deleteOrder(InvoiceId: number): Promise<Order> {
+    // First cancel to handle all related updates
+    // await this.cancelOrder(InvoiceId);
+    // Then delete
+    return this.prisma.order.delete({ where: { InvoiceId: Number(InvoiceId) } });
+  }
+
+  // Generate tracking token
+  async generateTrackingToken(customerId: string): Promise<string> {
+    return crypto.randomBytes(16).toString('hex');
+  }
+
+  // Track order
+  async trackingOrder(trackingToken: string): Promise<Order> {
+    const order = await this.prisma.order.findFirst({
+      where: { trackingToken },
+      include: { items: true }
+    });
+
+    if (!order) {
+      throw new HttpException("Order not found", HttpStatus.NOT_FOUND);
     }
 
-    async getAllDistinctValues() {
-        const products = await prisma.service.findMany({
-            distinct: ["name"],
-            select: {
-                id: true,
-                name: true,
-                sectionName: true,
-                price: true,
-                
-            }
-        });
-    
+    return order;
+  }
 
-    
-        const customers = await prisma.customer.findMany({
-            distinct: ["phone"],
-            select: {
-                id: true,
-                name: true,
-                phone: true,
-                location: true
-            }
-        });
-    
-        const salesPersons = await prisma.salesPerson.findMany({
-            distinct: ["name"],
-            select: {
-                id: true,
-                name: true
-            }
-        });
-    
-        return { products, customers, salesPersons };
-    }
-    
+  // Get all distinct values for order creation UI
+  async getAllDistinctValues() {
+    const [products, customers, salesPersons, sections, fabrics] = await Promise.all([
+      this.prisma.service.findMany({
+        select: {
+          id: true,
+          name: true,
+          sectionName: true,
+          price: true,
+          type: true
+        }
+      }),
+      this.prisma.customer.findMany({
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          location: true
+        }
+      }),
+      this.prisma.salesPerson.findMany({
+        select: {
+          id: true,
+          name: true
+        }
+      }),
+      this.prisma.section.findMany({
+        select: {
+          id: true,
+          name: true
+        }
+      }),
+      this.prisma.fabricInventory.findMany({
+        select: {
+          id: true,
+          fabricName: true,
+          type: true,
+          color: true,
+          quantityAvailable: true
+        }
+      })
+    ]);
+
+    return { products, customers, salesPersons, sections, fabrics };
+  }
 }

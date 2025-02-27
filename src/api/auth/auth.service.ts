@@ -27,8 +27,13 @@ export class AuthService {
     });
 
 
+
     if (!user) {
       throw new HttpException({ message: 'You are not authorized to access this application! Please contact your administrator.', type: 'error' }, HttpStatus.UNAUTHORIZED);
+    }
+    
+    if (user.status === "Revoked") {
+      throw new HttpException({ message: 'You have been revoked by the administrator! Please contact your administrator', type: 'error' }, HttpStatus.FORBIDDEN)
     }
 
     const OTP = Math.floor(100000 + Math.random() * 900000);
@@ -40,16 +45,16 @@ export class AuthService {
       },
     });
 
-//     const fullNumber = `${user.areaCode}${user.contact}`;
-//     console.log(fullNumber);
-//     await this.client.messages.create({
-//       body: `Hello ${user.username}, your login OTP for NUBRAS is ${OTP} ! Please verify your account to continue.
-      
-// This OTP will expire in 15 minutes. DO NOT SHARE THIS OTP WITH ANYONE.`,
-//       from: this.from,
-//       to: fullNumber
+    //     const fullNumber = `${user.areaCode}${user.contact}`;
+    //     console.log(fullNumber);
+    //     await this.client.messages.create({
+    //       body: `Hello ${user.username}, your login OTP for NUBRAS is ${OTP} ! Please verify your account to continue.
 
-//     });
+    // This OTP will expire in 15 minutes. DO NOT SHARE THIS OTP WITH ANYONE.`,
+    //       from: this.from,
+    //       to: fullNumber
+
+    //     });
 
 
     return { type: 'success', message: 'OTP sent successfully', statusCode: HttpStatus.OK };
@@ -178,7 +183,7 @@ export class AuthService {
 
 
     return { message: 'OTP sent successfully', type: 'success' };
-  } 
+  }
 
   async TailorLogin(tailor: { contact: string }) {
     const { contact } = tailor;
@@ -196,13 +201,13 @@ export class AuthService {
     }
     const fullNumber = `${exitingTailor.areaCode}${contact}`;
     const OTP = Math.floor(100000 + Math.random() * 900000);
-      // await this.client.messages.create({
-      //   body: `Hello ${exitingTailor.name}, your login OTP is ${OTP}! Please verify your account to continue. 
-      //   This OTP will expire in 15 minutes. DO NOT SHARE THIS OTP WITH ANYONE.`,
-      //   from: this.from,
-      //   to: fullNumber
+    // await this.client.messages.create({
+    //   body: `Hello ${exitingTailor.name}, your login OTP is ${OTP}! Please verify your account to continue. 
+    //   This OTP will expire in 15 minutes. DO NOT SHARE THIS OTP WITH ANYONE.`,
+    //   from: this.from,
+    //   to: fullNumber
 
-      // });
+    // });
 
     await prisma.oTP.create({
       data: {

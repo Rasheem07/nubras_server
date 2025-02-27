@@ -9,6 +9,7 @@ export class RefreshTokenMiddleware implements NestMiddleware {
     const accessToken = req.cookies['accessToken'];
 
     if (!refreshToken && !accessToken) {
+      
       return res.status(HttpStatus.UNAUTHORIZED).json({ message: 'Unauthorized', type: 'error' });
     }
 

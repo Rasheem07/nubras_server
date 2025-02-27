@@ -34,7 +34,7 @@ export class InventoryService {
     async getReservedFabrics() {
         return await prisma.fabric.findMany({
             where: {
-                order: {
+              Order: {
                     status: {
                         in: ["confirmed", "processing"]
                     }

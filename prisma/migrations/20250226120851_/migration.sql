@@ -42,8 +42,7 @@ CREATE TABLE "User" (
 
 -- CreateTable
 CREATE TABLE "Order" (
-    "InvoiceId" TEXT NOT NULL,
-    "type" "OrderType" NOT NULL,
+    "InvoiceId" SERIAL NOT NULL,
     "branch" TEXT NOT NULL,
     "status" "orderStatus" NOT NULL DEFAULT 'confirmed',
     "orderedFrom" TEXT DEFAULT 'SHOP',
@@ -51,14 +50,10 @@ CREATE TABLE "Order" (
     "customerName" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
-    "sectionName" TEXT NOT NULL,
     "salesPersonName" TEXT NOT NULL,
     "salesPersonId" TEXT NOT NULL,
     "customerLocation" TEXT NOT NULL,
     "paymentStatus" "orderPaymentStatus" NOT NULL DEFAULT 'NO_PAYMENT',
-    "productName" TEXT NOT NULL,
-    "productPrice" DOUBLE PRECISION NOT NULL,
-    "quantity" INTEGER NOT NULL,
     "totalAmount" DOUBLE PRECISION NOT NULL,
     "deliveryDate" TIMESTAMP(3),
     "paymentDate" TIMESTAMP(3),
@@ -67,15 +62,30 @@ CREATE TABLE "Order" (
     "PendingAmount" DOUBLE PRECISION NOT NULL,
     "PaidAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "assignedTo" TEXT,
-    "dueDate" TIMESTAMP(3) NOT NULL,
+    "PaymentdueDate" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "Order_pkey" PRIMARY KEY ("InvoiceId")
 );
 
 -- CreateTable
+CREATE TABLE "item" (
+    "id" TEXT NOT NULL,
+    "type" "OrderType" NOT NULL,
+    "productName" TEXT NOT NULL,
+    "productPrice" DOUBLE PRECISION NOT NULL,
+    "quantity" INTEGER NOT NULL,
+    "sectionName" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "orderInvoiceId" INTEGER,
+
+    CONSTRAINT "item_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "Transactions" (
     "id" TEXT NOT NULL,
-    "orderId" TEXT NOT NULL,
+    "orderId" INTEGER,
     "customerId" TEXT NOT NULL,
     "customerName" TEXT NOT NULL,
     "paymentType" "PaymentType" NOT NULL,
@@ -146,7 +156,6 @@ CREATE TABLE "Section" (
 -- CreateTable
 CREATE TABLE "Measurement" (
     "id" TEXT NOT NULL,
-    "orderId" TEXT NOT NULL,
     "productName" TEXT NOT NULL,
     "LengthInFront" DOUBLE PRECISION NOT NULL,
     "lengthBehind" DOUBLE PRECISION NOT NULL,
@@ -156,11 +165,11 @@ CREATE TABLE "Measurement" (
     "middle" DOUBLE PRECISION NOT NULL,
     "chest" DOUBLE PRECISION NOT NULL,
     "endOfShow" DOUBLE PRECISION NOT NULL,
-    "fabricId" TEXT NOT NULL,
     "notes" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
-    "orderInvoiceId" TEXT NOT NULL,
+    "fabricInventoryId" TEXT,
+    "orderInvoiceId" INTEGER NOT NULL,
 
     CONSTRAINT "Measurement_pkey" PRIMARY KEY ("id")
 );
@@ -181,7 +190,7 @@ CREATE TABLE "Employee" (
 -- CreateTable
 CREATE TABLE "salary" (
     "id" TEXT NOT NULL,
-    "orderId" TEXT NOT NULL,
+    "orderId" INTEGER NOT NULL,
     "employeeId" TEXT NOT NULL,
     "amount" DOUBLE PRECISION NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -198,7 +207,7 @@ CREATE TABLE "ProductMovement" (
     "quantity" INTEGER NOT NULL,
     "movementDate" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "inventoryId" TEXT NOT NULL,
-    "orderId" TEXT,
+    "orderId" INTEGER,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -272,9 +281,10 @@ CREATE TABLE "Fabric" (
     "type" TEXT NOT NULL,
     "color" TEXT NOT NULL,
     "quantity" INTEGER NOT NULL,
+    "itemId" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
-    "orderInvoiceId" TEXT NOT NULL,
+    "orderInvoiceId" INTEGER NOT NULL,
 
     CONSTRAINT "Fabric_pkey" PRIMARY KEY ("id")
 );
@@ -344,6 +354,9 @@ CREATE TABLE "config" (
 CREATE UNIQUE INDEX "User_username_key" ON "User"("username");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "item_id_key" ON "item"("id");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "Transactions_id_key" ON "Transactions"("id");
 
 -- CreateIndex
@@ -368,13 +381,7 @@ CREATE UNIQUE INDEX "config_key_key" ON "config"("key");
 ALTER TABLE "Order" ADD CONSTRAINT "Order_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Order" ADD CONSTRAINT "Order_sectionName_fkey" FOREIGN KEY ("sectionName") REFERENCES "Section"("name") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
 ALTER TABLE "Order" ADD CONSTRAINT "Order_salesPersonId_fkey" FOREIGN KEY ("salesPersonId") REFERENCES "SalesPerson"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "Order" ADD CONSTRAINT "Order_productName_fkey" FOREIGN KEY ("productName") REFERENCES "Service"("name") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Order" ADD CONSTRAINT "Order_orderRegisteredBy_fkey" FOREIGN KEY ("orderRegisteredBy") REFERENCES "User"("username") ON DELETE SET NULL ON UPDATE CASCADE;
@@ -383,7 +390,16 @@ ALTER TABLE "Order" ADD CONSTRAINT "Order_orderRegisteredBy_fkey" FOREIGN KEY ("
 ALTER TABLE "Order" ADD CONSTRAINT "Order_assignedTo_fkey" FOREIGN KEY ("assignedTo") REFERENCES "Employee"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Transactions" ADD CONSTRAINT "Transactions_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("InvoiceId") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "item" ADD CONSTRAINT "item_productName_fkey" FOREIGN KEY ("productName") REFERENCES "Service"("name") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "item" ADD CONSTRAINT "item_sectionName_fkey" FOREIGN KEY ("sectionName") REFERENCES "Section"("name") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "item" ADD CONSTRAINT "item_orderInvoiceId_fkey" FOREIGN KEY ("orderInvoiceId") REFERENCES "Order"("InvoiceId") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Transactions" ADD CONSTRAINT "Transactions_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("InvoiceId") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Transactions" ADD CONSTRAINT "Transactions_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -398,7 +414,7 @@ ALTER TABLE "Measurement" ADD CONSTRAINT "Measurement_orderInvoiceId_fkey" FOREI
 ALTER TABLE "Measurement" ADD CONSTRAINT "Measurement_productName_fkey" FOREIGN KEY ("productName") REFERENCES "Service"("name") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Measurement" ADD CONSTRAINT "Measurement_fabricId_fkey" FOREIGN KEY ("fabricId") REFERENCES "Fabric"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "Measurement" ADD CONSTRAINT "Measurement_fabricInventoryId_fkey" FOREIGN KEY ("fabricInventoryId") REFERENCES "FabricInventory"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "salary" ADD CONSTRAINT "salary_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("InvoiceId") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -420,6 +436,9 @@ ALTER TABLE "ProductRestock" ADD CONSTRAINT "ProductRestock_inventoryId_fkey" FO
 
 -- AddForeignKey
 ALTER TABLE "FabricInventory" ADD CONSTRAINT "FabricInventory_supplierId_fkey" FOREIGN KEY ("supplierId") REFERENCES "Supplier"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Fabric" ADD CONSTRAINT "Fabric_itemId_fkey" FOREIGN KEY ("itemId") REFERENCES "ProductInventory"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Fabric" ADD CONSTRAINT "Fabric_orderInvoiceId_fkey" FOREIGN KEY ("orderInvoiceId") REFERENCES "Order"("InvoiceId") ON DELETE RESTRICT ON UPDATE CASCADE;

@@ -103,7 +103,7 @@ export class TransactionsService {
         })
     }
 
-    async getTransactionsByOrderId(orderId: string) {
+    async getTransactionsByOrderId(orderId: number) {
         return prisma.transactions.findMany({
             where: { orderId }
         })

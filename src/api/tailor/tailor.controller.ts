@@ -14,7 +14,7 @@ export class TailorController {
     }
 
     @Get('order/:id')
-    async getOrderDetails(@Param('id') id: string) {
+    async getOrderDetails(@Param('id') id: number) {
         return this.tailorService.getOrderDetails(id);
     }
 

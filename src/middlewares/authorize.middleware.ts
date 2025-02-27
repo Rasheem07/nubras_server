@@ -1,12 +1,15 @@
 import { Injectable, NestMiddleware, HttpStatus } from "@nestjs/common";
 import { NextFunction, Request, Response } from "express";
 import * as jwt from "jsonwebtoken";
+import { prisma } from '../lib/prisma'
+import { trackUserActivity } from "./trackUserActivity";
+
 
 @Injectable()
 export class AuthorizeMiddleware implements NestMiddleware {
-    use(req: Request, res: Response, next: NextFunction) {
+    async use(req: Request, res: Response, next: NextFunction) {
         const token = req.cookies.accessToken || req.accessToken;
-        
+
         if (!token) {
             return res.status(HttpStatus.UNAUTHORIZED).json({ message: "Unauthorized user", type: "error" });
         }
@@ -15,6 +18,33 @@ export class AuthorizeMiddleware implements NestMiddleware {
             const decoded = jwt.verify(token, process.env.JWT_SECRET) as { id: string; role: string };
             (req as any).userId = decoded.id;
             (req as any).role = decoded.role;
+
+            const user = await prisma.user.findFirst({
+                where: { id: decoded.id },
+                select: { status: true }
+            })
+
+            if (user.status === "Revoked") {
+                console.log("user is revoked")
+                res.clearCookie('refreshToken');
+                res.clearCookie('isLogined')
+                res.clearCookie('isTailoredLogin')
+                res.clearCookie('accessToken');
+                return ;
+            }
+
+            await prisma.user.update({
+                where: {
+                    id: decoded.id
+                },
+                data: {
+                    lastActive: new Date(),
+                    status: "Active"
+                }
+            })
+
+            await trackUserActivity(decoded.id)
+
             next();
         } catch (error) {
             return res.status(HttpStatus.UNAUTHORIZED).json({ message: "Invalid token", type: "error" });

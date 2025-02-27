@@ -14,13 +14,14 @@ datasource db {
 }
 
 model User {
-  id             String    @id @default(cuid())
+  id             Int    @id @default(autoincrement())
   username       String    @unique
   contact        String
   areaCode       String    @default("+971")
   role           Role
   lastActive     DateTime?
   profilePicture String?
+  status         String?  @default("Offline")
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   Order          Order[]
@@ -48,8 +49,7 @@ enum orderPaymentStatus {
 }
 
 model Order {
-  InvoiceId         String             @id
-  type              OrderType
+  InvoiceId         Int                @id @default(autoincrement())
   branch            String
   status            orderStatus        @default(confirmed)
   orderedFrom       String?            @default("SHOP")
@@ -58,17 +58,11 @@ model Order {
   customerName      String
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
-  section           Section?           @relation(fields: [sectionName], references: [name])
-  sectionName       String
   salesPersonName   String
   SalesPerson       SalesPerson?       @relation(fields: [salesPersonId], references: [id])
   salesPersonId     String
   customerLocation  String
   paymentStatus     orderPaymentStatus @default(NO_PAYMENT)
-  product           Service?           @relation(fields: [productName], references: [name])
-  productName       String
-  productPrice      Float
-  quantity          Int
   totalAmount       Float
   deliveryDate      DateTime?
   paymentDate       DateTime?
@@ -80,10 +74,26 @@ model Order {
   PaidAmount        Float              @default(0)
   Employee          Employee?          @relation(fields: [assignedTo], references: [id])
   assignedTo        String?
-  dueDate           DateTime
+  PaymentdueDate    DateTime
   salary            salary[]
+  items             item[]
+  fabric            Fabric[]
   Measurement       Measurement[]
-  Fabric            Fabric[]
+}
+
+model item {
+  id             String    @id @unique @default(cuid())
+  type           OrderType
+  product        Service?  @relation(fields: [productName], references: [name])
+  productName    String
+  section        Section?  @relation(fields: [sectionName], references: [name])
+  productPrice   Float
+  quantity       Int
+  sectionName    String
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  Order          Order?    @relation(fields: [orderInvoiceId], references: [InvoiceId])
+  orderInvoiceId Int?
 }
 
 enum PaymentType {
@@ -94,7 +104,7 @@ enum PaymentType {
 
 model Transactions {
   id            String      @id @unique @default(cuid())
-  orderId       String
+  orderId       Int?
   order         Order?      @relation(fields: [orderId], references: [InvoiceId])
   customerId    String
   customerName  String
@@ -112,6 +122,7 @@ model SalesPerson {
   id               String   @id @default(cuid())
   name             String   @unique
   orders           Order[]
+  isActive         Boolean @default(true)
   totalOrders      Int      @default(0)
   totalSalesAmount Float    @default(0)
   createdAt        DateTime @default(now())
@@ -150,10 +161,11 @@ model Service {
   totalQuantitySold Int                @default(0)
   totalSalesAmount  Float              @default(0)
   sectionName       String
-  Orders            Order[] // Links orders
+  items             item[] // Links orders
   Measurements      Measurement[] // Custom measurements
   Inventory         ProductInventory[] // Inventory entries
   ProductMovement   ProductMovement[] // Tracks movements
+  Fabric            Fabric[]
 }
 
 model Section {
@@ -164,29 +176,28 @@ model Section {
   totalSalesAmount  Float     @default(0)
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
-  Order             Order[]
+  items             item[]
 }
 
 model Measurement {
-  id             String   @id @default(uuid())
-  orderId        String
-  order          Order?   @relation(fields: [orderInvoiceId], references: [InvoiceId])
-  productName    String
-  product        Service? @relation(fields: [productName], references: [name])
-  LengthInFront          Float
-  lengthBehind          Float
-  shoulder           Float
-  hands         Float
-  neck         Float
-  middle       Float
-  chest Float
-  endOfShow Float
-  fabricId       String
-  fabric         Fabric?  @relation(fields: [fabricId], references: [id])
-  notes          String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  orderInvoiceId String
+  id                String           @id @default(uuid())
+  order             Order            @relation(fields: [orderInvoiceId], references: [InvoiceId])
+  productName       String
+  product           Service?         @relation(fields: [productName], references: [name])
+  LengthInFront     Float
+  lengthBehind      Float
+  shoulder          Float
+  hands             Float
+  neck              Float
+  middle            Float
+  chest             Float
+  endOfShow         Float
+  notes             String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  FabricInventory   FabricInventory? @relation(fields: [fabricInventoryId], references: [id])
+  fabricInventoryId String?
+  orderInvoiceId    Int
 }
 
 model Employee {
@@ -203,7 +214,7 @@ model Employee {
 
 model salary {
   id         String   @id @default(cuid())
-  orderId    String
+  orderId    Int
   order      Order    @relation(fields: [orderId], references: [InvoiceId])
   employeeId String
   employee   Employee @relation(fields: [employeeId], references: [id])
@@ -228,7 +239,7 @@ model ProductMovement {
   movementDate DateTime         @default(now()) // Timestamp for when the movement occurred
   inventoryId  String // Foreign key to inventory
   inventory    ProductInventory @relation(fields: [inventoryId], references: [id])
-  orderId      String? // Nullable, for linking to orders
+  orderId      Int?
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 }
@@ -298,19 +309,21 @@ model FabricInventory {
   supplierId        String?
   supplier          Supplier?        @relation(fields: [supplierId], references: [id])
   FabricMovement    FabricMovement[]
+  Measurement       Measurement[]
 }
 
 model Fabric {
-  id             String        @id @default(cuid()) // Unique ID for the movement record
-  fabricName     String
-  type           String
-  color          String
-  quantity       Int
-  order          Order?        @relation(fields: [orderInvoiceId], references: [InvoiceId])
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  orderInvoiceId String
-  Measurement    Measurement[]
+  id                 String            @id @default(cuid()) // Unique ID for the movement record
+  fabricName         String
+  type               String
+  color              String
+  quantity           Int
+  item               Service?          @relation(fields: [itemId], references: [id])
+  itemId             String
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  Order              Order?            @relation(fields: [orderInvoiceId], references: [InvoiceId])
+  orderInvoiceId     Int
 }
 
 model FabricMovement {
@@ -366,7 +379,7 @@ model config {
   value     String
   encrypted Boolean  @default(true)
   createdBy User     @relation(fields: [userId], references: [id])
-  userId    String
+  userId    Int
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }

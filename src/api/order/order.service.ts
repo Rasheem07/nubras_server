@@ -11,7 +11,6 @@ export class OrderService {
             },
             select: {
                 InvoiceId: true,
-                type: true,
                 branch: true,
                 status: true,
                 orderedFrom: true,
@@ -19,10 +18,7 @@ export class OrderService {
                 createdAt: true,
                 updatedAt: true,
                 salesPersonName: true,
-                section: true,
-                product: true,
                 paymentStatus: true,
-                quantity: true,
                 totalAmount: true,
                 deliveryDate: true,
                 paymentDate: true,
@@ -30,7 +26,8 @@ export class OrderService {
                 PendingAmount: true, 
                 PaidAmount: true,
                 assignedTo: true,
-                Measurement: true,
+                items: true,
+                fabric: true,
             }
         })
     }
