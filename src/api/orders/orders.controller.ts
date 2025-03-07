@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, HttpException, HttpStatus, Param, Post, Put, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpException, HttpStatus, Param, Post, Put, Req, UseGuards } from '@nestjs/common';
 import { Order, Transactions, Measurement, FabricInventory, Fabric, item } from '@prisma/client';
 import { OrdersService } from './orders.service';
 import { ConfigService } from '@nestjs/config';
@@ -6,6 +6,7 @@ import { Twilio } from 'twilio';
 import { prisma } from 'src/lib/prisma';
 import { TransactionsService } from '../transactions/transactions.service';
 import { RolesGuard } from 'src/guards/Role.guard';
+import { Request } from 'express';
 
 @Controller('orders')
 export class OrdersController {
@@ -25,6 +26,13 @@ export class OrdersController {
         return this.ordersService.getOrders();
     }
 
+    @Get('salesman')
+    async getOrdersforSalesman(@Req() req: Request): Promise<Order[]> {
+        const id = req.userId;
+        console.log('id', id)
+        return this.ordersService.getOrdersforSalesman(id);
+    }
+
     @Get('/customer/:getOrdersByCustomerId')
     async getOrdersByCustomerId(@Param('getOrdersByCustomerId') customerId: string): Promise<Order[]> {
         return this.ordersService.getOrdersByCustomerId(customerId);
@@ -34,12 +42,57 @@ export class OrdersController {
     async getOrdersBySalesPersonId(@Param('getOrdersBySalesPersonId') salesPersonId: string): Promise<Order[]> {
         return this.ordersService.getOrdersBySalespersonId(salesPersonId);
     }
+    
+    @Post('salesman/create')
+    async createOrderSalesman(@Req() req: Request, @Body() data: { order: Order, items: item[], transactions: Transactions[], fabrics: Fabric[], measurements: Measurement[] }) {
 
+        const id = req.userId;
+
+        const salesperson = await prisma.salesPerson.findUnique({
+            where: { id },
+            select: { name: true }
+        })
+
+        const formattedData = {
+            ...data,
+            order: {...data.order, salesPersonName: salesperson.name}
+        }
+
+        await this.ordersService.createOrderWithRelations(formattedData);
+
+
+
+        // const phoneNumber = await prisma.customer.findFirst({
+        //     where: {
+        //         id: order.customerId
+        //     },
+        //     select: {
+        //         phone: true,
+        //     }
+        // });
+
+
+        // await this.client.messages.create({
+        //     from: this.from,
+        //     to: phoneNumber.phone,
+        //     body: `Your order for ${order.productName} has been created successfully! Tracking your order at http://localhost:3001/orders/tracking/${order.trackingToken}`
+        // });
+
+        await prisma.auditLog.create({
+            data: {
+                actionType: "Order created",
+                description: `Order with Invoice ID ${data.order.InvoiceId} successfully created!`
+            }
+        })
+
+        return { type: "success", message: "Order created successfully" };
+
+    }
     @UseGuards(new RolesGuard(['ADMIN', 'EDITOR']))
     @Post('/create')
-    async createOrder(@Body() data: { order: Order, items: item[],  transactions: Transactions[], fabrics: Fabric[], measurements: Measurement[] }) {
+    async createOrder(@Body() data: { order: Order, items: item[], transactions: Transactions[], fabrics: Fabric[], measurements: Measurement[] }) {
 
-       await this.ordersService.createOrderWithRelations(data);
+        await this.ordersService.createOrderWithRelations(data);
 
 
 

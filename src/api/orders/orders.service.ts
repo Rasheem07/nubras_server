@@ -18,6 +18,20 @@ export class OrdersService {
       }
     });
   }
+  async getOrdersforSalesman(id: string): Promise<Order[]> {
+    return this.prisma.order.findMany({
+      where: {
+        SalesPerson: {
+          id
+        }
+      },
+      include: {
+        items: true,
+        Customer: true,
+        Transactions: true
+      }
+    });
+  }
 
   async getOrdersByCustomerId(customerId: string): Promise<Order[]> {
     return this.prisma.order.findMany({
@@ -40,7 +54,6 @@ export class OrdersService {
     });
   }
 
-
   async createOrderWithRelations(data: {
     order: Order,
     items: item[],
@@ -48,21 +61,21 @@ export class OrdersService {
     fabrics?: Fabric[],
     measurements?: Measurement[]
   }): Promise<Order> {
-    // Core data validation (synchronous, in-memory)
+    // Core validation
     const validationErrors = this.validateOrderData(data);
     if (validationErrors.length) {
       throw new HttpException(validationErrors.join(', '), HttpStatus.BAD_REQUEST);
     }
   
-    // Create minimal critical path transaction (order only)
+    // Start a single Prisma transaction
     const newOrder = await this.prisma.$transaction(async (tx) => {
-      // Parallel prefetch only critical data
+      // Fetch customer and salesperson in parallel
       const [customer, salesPerson] = await Promise.all([
-        tx.customer.findFirst({ 
+        tx.customer.findFirst({
           where: { name: data.order.customerName },
           select: { id: true, name: true }
         }),
-        tx.salesPerson.findUnique({ 
+        tx.salesPerson.findUnique({
           where: { name: data.order.salesPersonName },
           select: { id: true, name: true }
         })
@@ -73,15 +86,53 @@ export class OrdersService {
       }
   
       const trackingToken = this.generateTrackingTokenSync(customer.name);
-      
-      // Calculate payment info synchronously
       const totalPaid = data.transactions?.reduce((sum, t) => sum + t.amount, 0) || 0;
-      const paymentStatus = totalPaid >= data.order.totalAmount 
-        ? "FULL_PAYMENT" 
+      const paymentStatus = totalPaid >= data.order.totalAmount
+        ? "FULL_PAYMENT"
         : totalPaid > 0 ? "PARTIAL_PAYMENT" : "NO_PAYMENT";
   
-      // Create only order record in critical path
-      return tx.order.create({
+      // Ensure inventory is available **before** creating order
+      const readyMadeItems = data.items.filter(i => i.type === "READY_MADE");
+  
+      if (readyMadeItems.length) {
+        const productGroups = readyMadeItems.reduce((acc, item) => {
+          acc[item.productName] = (acc[item.productName] || 0) + item.quantity;
+          return acc;
+        }, {} as Record<string, number>);
+  
+        // Check inventory for all required products
+        for (const [productName, quantity] of Object.entries(productGroups)) {
+          const inventory = await tx.productInventory.findFirst({
+            where: { productName },
+            select: { id: true, quantityAvailable: true }
+          });
+  
+          if (!inventory || inventory.quantityAvailable < quantity) {
+            throw new HttpException({ message: `Insufficient stock for ${productName}`, type: "error" }, HttpStatus.BAD_REQUEST);
+          }
+  
+          // Reserve inventory
+          await tx.productInventory.update({
+            where: { id: inventory.id },
+            data: { quantityAvailable: { decrement: quantity } }
+          });
+  
+          // Record movement
+          await tx.productMovement.create({
+            data: {
+              productName,
+              quantity,
+              movementType: "SALE",
+              movementDate: new Date(),
+              inventoryId: inventory.id,
+              orderId: data.order.InvoiceId
+            }
+          });
+        }
+      }
+  
+      // Create order record
+      const order = await tx.order.create({
         data: {
           ...data.order,
           customerId: customer.id,
@@ -93,30 +144,24 @@ export class OrdersService {
           ...(paymentStatus === "FULL_PAYMENT" ? { paymentDate: new Date() } : {})
         }
       });
+  
+      // Create items for the order
+      await tx.item.createMany({
+        data: data.items.map(item => ({
+          ...item,
+          orderInvoiceId: order.InvoiceId
+        }))
+      });
+  
+      return order;
     }, {
-      maxWait: 1000,
-      timeout: 2000,
+      maxWait: 2000,
+      timeout: 5000,
       isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
     });
   
-    // Process remaining work in background without blocking
-    setImmediate(() => {
-      this.processOrderRelatedData(newOrder, data).catch(error => {
-        console.error(`Background processing for order ${newOrder.InvoiceId} failed:`, error);
-        // Log error to database for visibility
-        this.prisma.order.delete({
-          where: {
-            InvoiceId: newOrder.InvoiceId
-          }
-        })
-        this.prisma.auditLog.create({
-          data: {
-            actionType: "Background Processing Failed! Order has been deleted",
-            description: `Order ${newOrder.InvoiceId} background processing failed: ${error.message}`
-          }
-        }).catch(e => console.error("Failed to log error:", e));
-      });
-    });
+    // Process any additional order-related data outside critical transaction path
+    await this.processOrderRelatedData(newOrder, data);
   
     return newOrder;
   }
@@ -131,7 +176,7 @@ export class OrdersService {
         this.processTransactions(newOrder.InvoiceId, data.transactions),
         this.updateStatistics(newOrder.InvoiceId, data)
       ]);
-      
+
       // Log successful completion
       await this.prisma.auditLog.create({
         data: {
@@ -142,11 +187,10 @@ export class OrdersService {
     } catch (error) {
       // Retry once with sequential processing if parallel fails
       try {
-        await this.processOrderItems(newOrder.InvoiceId, data.items);
         await this.processFabricsAndMeasurements(newOrder.InvoiceId, data.fabrics, data.measurements);
         await this.processTransactions(newOrder.InvoiceId, data.transactions);
         await this.updateStatistics(newOrder.InvoiceId, data);
-        
+
         await this.prisma.auditLog.create({
           data: {
             actionType: "Order Relations Processed (Retry)",
@@ -158,30 +202,30 @@ export class OrdersService {
       }
     }
   }
-  
+
   // Strongly typed validation before any DB calls
   private validateOrderData(data: any): string[] {
     const errors: string[] = [];
-    
+
     if (!data.order?.customerName) errors.push('Customer name is required');
     if (!data.order?.salesPersonName) errors.push('Sales person name is required');
     if (!data.order?.totalAmount || data.order.totalAmount <= 0) errors.push('Valid total amount is required');
-    
+
     // Validate items have required fields synchronously
     if (data.items?.length) {
       data.items.forEach((item: any, idx: number) => {
-        if (!item.productName) errors.push(`Item ${idx+1} missing product name`);
-        if (!item.quantity || item.quantity <= 0) errors.push(`Item ${idx+1} has invalid quantity`);
+        if (!item.productName) errors.push(`Item ${idx + 1} missing product name`);
+        if (!item.quantity || item.quantity <= 0) errors.push(`Item ${idx + 1} has invalid quantity`);
       });
     }
-    
+
     return errors;
   }
-  
+
   // Process items with optimistic inventory validation
   private async processOrderItems(orderId: number, items?: item[]): Promise<void> {
     if (!items?.length) return;
-    
+
     // Bulk create items
     await this.prisma.item.createMany({
       data: items.map(item => ({
@@ -189,23 +233,23 @@ export class OrdersService {
         orderInvoiceId: orderId
       }))
     });
-    
+
     // Handle inventory updates only for ready-made items
     const readyMadeItems = items.filter(i => i.type === "READY_MADE");
     if (!readyMadeItems.length) return;
-    
+
     // Use optimal batch size to balance parallelism
     const BATCH_SIZE = 10;
     const batches = [];
-    
+
     // Group by product for efficient inventory updates
     const productGroups = readyMadeItems.reduce((acc, item) => {
       acc[item.productName] = (acc[item.productName] || 0) + item.quantity;
       return acc;
     }, {} as Record<string, number>);
-    
+
     const productEntries = Object.entries(productGroups);
-    
+
     // Process inventory updates in parallel batches
     for (let i = 0; i < productEntries.length; i += BATCH_SIZE) {
       const batch = productEntries.slice(i, i + BATCH_SIZE);
@@ -216,17 +260,18 @@ export class OrdersService {
             where: { productName },
             select: { id: true, quantityAvailable: true }
           });
-          
+
           if (!inventory || inventory.quantityAvailable < quantity) {
-            throw new Error(`Insufficient stock for ${productName}`);
+
+            throw new HttpException({ message: `Insufficient stock for ${productName}`, type: "error" }, HttpStatus.NOT_FOUND);
           }
-          
+
           // Update inventory
           await this.prisma.productInventory.update({
             where: { id: inventory.id },
             data: { quantityAvailable: { decrement: quantity } }
           });
-          
+
           // Record movement
           await this.prisma.productMovement.create({
             data: {
@@ -250,14 +295,14 @@ export class OrdersService {
         }
       })));
     }
-    
+
     await Promise.all(batches);
   }
-  
+
   // Optimized fabric and measurement processing
   private async processFabricsAndMeasurements(
-    orderId: number, 
-    fabrics?: Fabric[], 
+    orderId: number,
+    fabrics?: Fabric[],
     measurements?: Measurement[]
   ): Promise<void> {
     // Process in parallel
@@ -265,20 +310,20 @@ export class OrdersService {
       // Handle fabrics
       (async () => {
         if (!fabrics?.length) return;
-        
+
         // Create a map for item lookup
         const items = await this.prisma.item.findMany({
           where: { orderInvoiceId: orderId },
           select: { id: true, productName: true }
         });
-        
+
         const itemMap = new Map(items.map(item => [item.productName, item.id]));
-        
+
         // Process fabrics in batches
         const BATCH_SIZE = 20;
         for (let i = 0; i < fabrics.length; i += BATCH_SIZE) {
           const batch = fabrics.slice(i, i + BATCH_SIZE);
-          
+
           // Process each fabric in parallel
           await Promise.all(batch.map(async (fabric) => {
             // Get inventory
@@ -290,23 +335,23 @@ export class OrdersService {
               },
               select: { id: true, quantityAvailable: true }
             });
-            
+
             if (!inventory || inventory.quantityAvailable < fabric.quantity) {
               throw new HttpException(
                 `Insufficient fabric stock for ${fabric.fabricName} (${fabric.type}-${fabric.color})`,
                 HttpStatus.BAD_REQUEST
               );
             }
-            
+
             // Update inventory
             await this.prisma.fabricInventory.update({
               where: { id: inventory.id },
               data: { quantityAvailable: { decrement: fabric.quantity } }
             });
-            
+
             // Find item ID
             const itemId = fabric.itemId || itemMap.get(fabric.itemId || "");
-            
+
             // Create fabric record
             await this.prisma.fabric.create({
               data: {
@@ -321,11 +366,11 @@ export class OrdersService {
           }));
         }
       })(),
-      
+
       // Handle measurements
       (async () => {
         if (!measurements?.length) return;
-        
+
         await this.prisma.measurement.createMany({
           data: measurements.map(measurement => ({
             ...measurement,
@@ -335,22 +380,22 @@ export class OrdersService {
       })()
     ]);
   }
-  
+
   // Process transactions
   private async processTransactions(
-    orderId: number, 
+    orderId: number,
     transactions?: Transactions[]
   ): Promise<void> {
     if (!transactions?.length) return;
-    
+
     // Get customer info - needed for transaction records
     const order = await this.prisma.order.findUnique({
       where: { InvoiceId: orderId },
       select: { customerId: true, Customer: { select: { name: true } } }
     });
-    
+
     if (!order) return;
-    
+
     // Create transactions
     await this.prisma.transactions.createMany({
       data: transactions.map(transaction => ({
@@ -361,43 +406,43 @@ export class OrdersService {
       }))
     });
   }
-  
+
   // Update statistics in separate transaction
   private async updateStatistics(orderId: number, data: any): Promise<void> {
     // Extract customer and sales info 
     const order = await this.prisma.order.findUnique({
       where: { InvoiceId: orderId },
-      select: { 
-        customerId: true, 
-        salesPersonId: true, 
+      select: {
+        customerId: true,
+        salesPersonId: true,
         totalAmount: true
       }
     });
-    
+
     if (!order || !data.items?.length) return;
-    
+
     // Pre-calculate all totals in memory
-    const productTotals = new Map<string, {quantity: number, amount: number}>();
-    const sectionTotals = new Map<string, {quantity: number, amount: number}>();
-    
+    const productTotals = new Map<string, { quantity: number, amount: number }>();
+    const sectionTotals = new Map<string, { quantity: number, amount: number }>();
+
     for (const item of data.items) {
       // For products
       const productKey = item.productName;
-      const productTotal = productTotals.get(productKey) || {quantity: 0, amount: 0};
+      const productTotal = productTotals.get(productKey) || { quantity: 0, amount: 0 };
       productTotal.quantity += item.quantity;
       productTotal.amount += item.productPrice * item.quantity;
       productTotals.set(productKey, productTotal);
-      
+
       // For sections
       if (item.sectionName) {
         const sectionKey = item.sectionName;
-        const sectionTotal = sectionTotals.get(sectionKey) || {quantity: 0, amount: 0};
+        const sectionTotal = sectionTotals.get(sectionKey) || { quantity: 0, amount: 0 };
         sectionTotal.quantity += item.quantity;
         sectionTotal.amount += item.productPrice * item.quantity;
         sectionTotals.set(sectionKey, sectionTotal);
       }
     }
-    
+
     // Update customer stats
     await this.prisma.customer.update({
       where: { id: order.customerId },
@@ -406,7 +451,7 @@ export class OrdersService {
         totalSpent: { increment: order.totalAmount }
       }
     });
-    
+
     // Update sales person stats
     await this.prisma.salesPerson.update({
       where: { id: order.salesPersonId },
@@ -415,11 +460,11 @@ export class OrdersService {
         totalSalesAmount: { increment: order.totalAmount }
       }
     });
-    
+
     // Update product stats - in batches
     const productBatches = [];
     const productEntries = [...productTotals.entries()];
-    
+
     for (let i = 0; i < productEntries.length; i += 5) {
       const batch = productEntries.slice(i, i + 5);
       productBatches.push(Promise.all(batch.map(([productName, totals]) =>
@@ -432,11 +477,11 @@ export class OrdersService {
         })
       )));
     }
-    
+
     // Update section stats - in batches
     const sectionBatches = [];
     const sectionEntries = [...sectionTotals.entries()];
-    
+
     for (let i = 0; i < sectionEntries.length; i += 5) {
       const batch = sectionEntries.slice(i, i + 5);
       sectionBatches.push(Promise.all(batch.map(([sectionName, totals]) =>
@@ -449,14 +494,14 @@ export class OrdersService {
         })
       )));
     }
-    
+
     // Execute all batches
     await Promise.all([
-      ...productBatches, 
+      ...productBatches,
       ...sectionBatches
     ]);
   }
-  
+
   private generateTrackingTokenSync(customerName: string): string {
     const prefix = customerName.substring(0, 3).toUpperCase();
     const timestamp = Date.now().toString(36);
@@ -626,7 +671,7 @@ export class OrdersService {
 
   // Get all distinct values for order creation UI
   async getAllDistinctValues() {
-    const [products, customers, salesPersons, sections, fabrics] = await Promise.all([
+    const [products, customers, salesPersons, sections, fabrics, tailors] = await Promise.all([
       this.prisma.service.findMany({
         select: {
           id: true,
@@ -647,7 +692,8 @@ export class OrdersService {
       this.prisma.salesPerson.findMany({
         select: {
           id: true,
-          name: true
+          name: true,
+          contact: true
         }
       }),
       this.prisma.section.findMany({
@@ -664,9 +710,10 @@ export class OrdersService {
           color: true,
           quantityAvailable: true
         }
-      })
+      }),
+      this.prisma.employee.findMany()
     ]);
 
-    return { products, customers, salesPersons, sections, fabrics };
+    return { products, customers, salesPersons, sections, fabrics, tailors };
   }
 }

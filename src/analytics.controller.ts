@@ -7,136 +7,163 @@ export class DashboardController {
   private readonly prisma = prisma;
 
   @Get('overview')
-  async getDashboardData() {
-    const now = new Date();
-    const currentMonthStart = startOfMonth(now);
-    const currentMonthEnd = endOfMonth(now);
-    const previousMonthStart = startOfMonth(subMonths(now, 1));
-    const previousMonthEnd = endOfMonth(subMonths(now, 1));
+  async getData() {
+    try {
+      // Summary statistics
+      const totalOrders = await prisma.order.count();
+      const totalSales = await prisma.order.aggregate({
+        _sum: { totalAmount: true }
+      });
+      
+      const totalCustomers = await prisma.customer.count();
+      
+      const pendingOrders = await prisma.order.count({
+        where: {
+          status: { 
+            in: ['confirmed', 'processing', 'tailoring'] 
+          }
+        }
+      });
+      
+      const reorderPoints = await prisma.fabricInventory.findMany({
+        select: { reorderPoint: true }
+      });
+      
+      // Extract the reorder points as an array of numbers
+      const reorderPointValues = reorderPoints.map(fabric => fabric.reorderPoint);
+      
+      const lteFabric = Math.min(...reorderPointValues) | 0;
+      // Get the count of low stock fabrics
+      const lowStockFabrics = await prisma.fabricInventory.count({
+        where: {
+          quantityAvailable: {
+            lte: lteFabric
+          }
+        }
+      });
+      
 
-    // Sales Data
-    const [currentSales, previousSales] = await Promise.all([
-      this.prisma.order.aggregate({
-        _sum: { totalAmount: true },
-        where: { createdAt: { gte: currentMonthStart, lte: currentMonthEnd }, status: 'delivered' },
-      }),
-      this.prisma.order.aggregate({
-        _sum: { totalAmount: true },
-        where: { createdAt: { gte: previousMonthStart, lte: previousMonthEnd }, status: 'delivered' },
-      }),
-    ]);
+      const reorderPointsForProducts = await prisma.productInventory.findMany({
+        select: { reorderPoint: true }
+      });
 
-    // Orders Count
-    const [currentOrders, previousOrders] = await Promise.all([
-      this.prisma.order.count({ where: { createdAt: { gte: currentMonthStart, lte: currentMonthEnd } } }),
-      this.prisma.order.count({ where: { createdAt: { gte: previousMonthStart, lte: previousMonthEnd } } }),
-    ]);
+      const reorderPointValuesForProd = reorderPointsForProducts.map(item => item.reorderPoint)
 
-    // New Customers Count
-    const [currentCustomers, previousCustomers] = await Promise.all([
-      this.prisma.customer.count({ where: { createdAt: { gte: currentMonthStart, lte: currentMonthEnd } } }),
-      this.prisma.customer.count({ where: { createdAt: { gte: previousMonthStart, lte: previousMonthEnd } } }),
-    ]);
+      const lteProd = Math.min(...reorderPointValuesForProd) | 0;
 
-    // Recent 5 Orders
-    const recentOrders = await this.prisma.order.findMany({
-      orderBy: { createdAt: 'desc' },
-      take: 5,
-      select: {
-        InvoiceId: true,
-        totalAmount: true,
-        status: true,
-        createdAt: true,
-        customerName: true,
-      },
-    });
-
-    // Sales by Month for Chart
-    const monthlySalesData = await this.prisma.order.groupBy({
-      by: ['createdAt'],
-      _sum: { totalAmount: true },
-      where: { createdAt: { gte: previousMonthStart, lte: currentMonthEnd } },
-      orderBy: { createdAt: 'asc' },
-    });
-
-    const salespersonPerformance = await this.prisma.$queryRaw<
-      { name: string; "Total orders": bigint; "Total sales amount": bigint }[]
-    >`SELECT name, SUM("totalOrders") as "Total orders", SUM("totalSalesAmount") as "Total sales amount" from "SalesPerson" GROUP BY name ORDER BY "Total orders" desc`;
-
-    // Customer Insights
-    const totalCustomers = await this.prisma.customer.count();
-    const returningCustomers = await this.prisma.customer.count({
-      where: { orders: { some: { createdAt: { lt: currentMonthStart } } } },
-    });
-    const newCustomerRatio = ((currentCustomers / totalCustomers) * 100).toFixed(2);
-
-    // Product Category Performance
-    const categoryPerformance = await this.prisma.$queryRaw<
-      { name: string; "Total quantity sold": bigint; "Total sales amount": bigint }[]
-    >`SELECT name, SUM("totalQuantitySold") as "Total quantity sold", SUM("totalSalesAmount") as "Total sales amount" from "Section" GROUP BY name ORDER BY "Total quantity sold" desc`;
-
-    // Percentage Change Utility
-    const calcPercentageChange = (current: number, previous: number) =>
-      previous === 0 ? 100 : (((current - previous) / previous) * 100).toFixed(2);
-
-    return {
-      trendCards: {
-        sales: {
-          current: Number(currentSales._sum.totalAmount) || 0,
-          previous: Number(previousSales._sum.totalAmount) || 0,
-          percentChange: Number(
-            calcPercentageChange(
-              Number(currentSales._sum.totalAmount) || 0,
-              Number(previousSales._sum.totalAmount) || 0,
-            ),
-          ),
+      const lowStockProducts = await prisma.productInventory.count({
+        where: {
+          quantityAvailable: {
+            lte: lteProd
+          }
+        }
+      });
+      
+      // Recent orders
+      const recentOrders = await prisma.order.findMany({
+        take: 5,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          Customer: true,
+          SalesPerson: true,
+          items: {
+            include: {
+              product: true,
+              section: true
+            }
+          }
+        }
+      });
+      
+      // Top selling products
+      const topProducts = await prisma.service.findMany({
+        take: 5,
+        orderBy: { totalSalesAmount: 'desc' },
+        include: { Section: true }
+      });
+      
+      // Top sales persons
+      const topSalesPersons = await prisma.salesPerson.findMany({
+        take: 5,
+        orderBy: { totalSalesAmount: 'desc' }
+      });
+      
+      // Top customers
+      const topCustomers = await prisma.customer.findMany({
+        take: 5,
+        orderBy: { totalSpent: 'desc' }
+      });
+      
+      // Inventory insights
+      const fabricInventory = await prisma.fabricInventory.findMany({
+        take: 10,
+        orderBy: { quantityAvailable: 'asc' },
+        include: { supplier: true }
+      });
+      
+      const productInventory = await prisma.productInventory.findMany({
+        take: 10,
+        orderBy: { quantityAvailable: 'asc' },
+        include: { product: true }
+      });
+      
+      // Sales by type
+      const readyMadeSales = await prisma.item.aggregate({
+        where: { type: 'READY_MADE' },
+        _sum: { productPrice: true }
+      });
+      
+      const customTailoredSales = await prisma.item.aggregate({
+        where: { type: 'CUSTOM_TAILORED' },
+        _sum: { productPrice: true }
+      });
+      
+      // Payment insights
+      const paymentStats = await prisma.order.groupBy({
+        by: ['paymentStatus'],
+        _count: { InvoiceId: true },
+        _sum: { totalAmount: true }
+      });
+      
+      // Section performance
+      const sectionPerformance = await prisma.section.findMany({
+        orderBy: { totalSalesAmount: 'desc' },
+      });
+      
+      // Tailors performance
+      const tailorPerformance = await prisma.employee.findMany({
+        where: { role: { in: ['MASTER_TAILOR', 'TAILOR'] } },
+        include: { 
+          orders: true,
+          salary: true 
+        }
+      });
+      
+      return {
+        summary: {
+          totalOrders,
+          totalSales: totalSales._sum.totalAmount || 0,
+          totalCustomers,
+          pendingOrders,
+          lowStockFabrics,
+          lowStockProducts,
+          readyMadeSales: readyMadeSales._sum.productPrice || 0,
+          customTailoredSales: customTailoredSales._sum.productPrice || 0
         },
-        orders: {
-          current: currentOrders,
-          previous: previousOrders,
-          percentChange: Number(calcPercentageChange(currentOrders, previousOrders)),
-        },
-        newCustomers: {
-          current: currentCustomers,
-          previous: previousCustomers,
-          percentChange: Number(calcPercentageChange(currentCustomers, previousCustomers)),
-        },
-        avgOrderValue: {
-          current: Number(currentSales._sum.totalAmount) / (currentOrders || 1),
-          previous: Number(previousSales._sum.totalAmount) / (previousOrders || 1),
-          percentChange: Number(
-            calcPercentageChange(
-              Number(currentSales._sum.totalAmount) / (currentOrders || 1),
-              Number(previousSales._sum.totalAmount) / (previousOrders || 1),
-            ),
-          ),
-        },
-      },
-      recentOrders: recentOrders.map((order) => ({
-        id: order.InvoiceId,
-        customerName: order.customerName,
-        totalAmount: Number(order.totalAmount),
-        status: order.status,
-        date: order.createdAt,
-      })),
-      charts: {
-        monthlySales: monthlySalesData.map((item) => ({
-          date: item.createdAt,
-          totalSales: Number(item._sum.totalAmount),
-        })),
-        salespersonPerformance: salespersonPerformance.map((item) => ({
-          name: item.name,
-          totalOrders: Number(item["Total orders"]),
-          totalSalesAmount: Number(item["Total sales amount"]),
-        })),
-        customerInsights: { totalCustomers, returningCustomers, newCustomerRatio },
-        categoryPerformance: categoryPerformance.map((item) => ({
-          name: item.name,
-          totalQuantitySold: Number(item["Total quantity sold"]),
-          totalSalesAmount: Number(item["Total sales amount"]),
-        })),
-      },
-    };
+        recentOrders,
+        topProducts,
+        topSalesPersons,
+        topCustomers,
+        fabricInventory,
+        productInventory,
+        paymentStats,
+        sectionPerformance,
+        tailorPerformance
+      };
+    } catch (error) {
+      console.error('Error fetching dashboard data:', error);
+      throw error;
+    }
   }
 }
 

@@ -34,6 +34,7 @@ enum OrderType {
 }
 
 enum orderStatus {
+  holding
   confirmed
   processing
   tailoring
@@ -51,7 +52,7 @@ enum orderPaymentStatus {
 model Order {
   InvoiceId         Int                @id @default(autoincrement())
   branch            String
-  status            orderStatus        @default(confirmed)
+  status            orderStatus        @default(holding)
   orderedFrom       String?            @default("SHOP")
   Customer          Customer?          @relation(fields: [customerId], references: [id])
   customerId        String
@@ -122,6 +123,8 @@ model SalesPerson {
   id               String   @id @default(cuid())
   name             String   @unique
   orders           Order[]
+  contact          String
+  areaCode         String   @default("+971")
   isActive         Boolean @default(true)
   totalOrders      Int      @default(0)
   totalSalesAmount Float    @default(0)

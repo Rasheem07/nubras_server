@@ -7,7 +7,7 @@ import { Throttle } from '@nestjs/throttler';
 export class AuthController {
     constructor(private readonly authService: AuthService) { }
     
-    @Throttle({ default: { limit: 5, ttl: 30000 } })
+    @Throttle({ default: { limit: 10, ttl: 30000 } })
     @Post('login')
     async login(@Body() body: {contact: string}, @Res({ passthrough: true }) res: Response) {
         const { contact } = body;
@@ -28,6 +28,32 @@ export class AuthController {
         }
 
         const response = await this.authService.Register(username, contact, areaCode);
+        
+        res.status(response.statusCode).json({ type: response.type, message: response.message });
+    }
+
+    @Throttle({ default: { limit: 10, ttl: 30000 } })
+    @Post('salesman/login')
+    async salesmanLogin(@Body() body: {contact: string}, @Res({ passthrough: true }) res: Response) {
+        const { contact } = body;
+        if (!contact) {
+            throw new HttpException({ message: 'Contact is required', type: 'error' }, HttpStatus.BAD_REQUEST);
+        }
+        const response = await this.authService.salesmanLogin(contact);
+
+        res.status(response.statusCode).json({ type: response.type, message: response.message });
+    }
+
+    @Post('salesman/register')
+    async salesmanRegister(@Body() body: {username: string, contact: string, areaCode: string}, @Res({ passthrough: true }) res: Response) {
+        const { username, contact, areaCode } = body;
+
+        if (!username || !contact) {
+
+            throw new HttpException({ message: 'Username, password and contact are required', type: 'error' }, HttpStatus.BAD_REQUEST);
+        }
+
+        const response = await this.authService.salesmanRegister(username, contact, areaCode);
         
         res.status(response.statusCode).json({ type: response.type, message: response.message });
     }
@@ -73,7 +99,7 @@ export class AuthController {
     }
 
     @Post('/tailor/login')
-    @Throttle({ default: { limit: 1, ttl: 30000 } })
+    @Throttle({ default: { limit: 10, ttl: 30000 } })
     TailorLogin(@Body() tailor: {contact: string}) {
         return this.authService.TailorLogin(tailor);
     }
@@ -107,7 +133,37 @@ export class AuthController {
     @Throttle({ default: { limit: 1, ttl: 30000 } })
     @Post('tailor/resend-otp')
     async TailorresendOTP(@Body() body: {contact: string}) {
-        return this.authService.resendTailorOTP(body.contact);
+        return this.authService.resendTailorOTP(body.contact); 
+    }
+    @Post('salesman/verify-otp')
+    async salesmanVerifyOTP(@Body() otpData: {otp: string, contact: string}, @Res() res: Response) {
+        const response = await this.authService.verifySalesmanOTP(otpData);
+        res.cookie('accessToken', response.accessToken, {
+
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            maxAge: 15 * 60 * 1000,
+
+            sameSite: 'lax',
+        });
+
+        res.cookie('refreshToken', response.refreshToken, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+            sameSite: 'lax',
+        });
+        res.cookie('isSalesmanLogined', true, {
+            httpOnly: false,
+            secure: false
+        });
+        res.status(200).json({ message: 'Login successful', type: 'success' });
+    }
+
+    @Throttle({ default: { limit: 1, ttl: 30000 } })
+    @Post('salesman/resend-otp')
+    async salesmanResendOTP(@Body() body: {contact: string}) {
+        return this.authService.resendOTP(body.contact);
     }
 
 }

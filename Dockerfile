@@ -1,22 +1,26 @@
-# Dockerfile
-# Use Node.js base image
-FROM node:20-alpine
+# Use Node.js image
+FROM node:18-alpine
+
+# Install pnpm globally
+RUN npm install -g pnpm
 
 # Set working directory
 WORKDIR /app
 
-# Copy package.json and install dependencies
-COPY package*.json ./
-RUN npm install
+# Copy package.json and lock file
+COPY package.json pnpm-lock.yaml ./
 
-# Copy the rest of the application
+# Install dependencies
+RUN pnpm install --frozen-lockfile
+
+# Copy the entire project
 COPY . .
 
 # Build the NestJS app
-RUN npm run build
+RUN pnpm run build
 
-# Expose the port the app runs on
+# Expose the port (only inside Docker network)
 EXPOSE 3000
 
-# Command to run the application
-CMD ["npm", "run", "start"]
+# Start the application
+CMD ["pnpm", "start"]

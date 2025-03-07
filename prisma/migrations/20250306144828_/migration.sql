@@ -2,7 +2,7 @@
 CREATE TYPE "OrderType" AS ENUM ('READY_MADE', 'CUSTOM_TAILORED');
 
 -- CreateEnum
-CREATE TYPE "orderStatus" AS ENUM ('confirmed', 'processing', 'tailoring', 'ready', 'delivered', 'cancelled');
+CREATE TYPE "orderStatus" AS ENUM ('holding', 'confirmed', 'processing', 'tailoring', 'ready', 'delivered', 'cancelled');
 
 -- CreateEnum
 CREATE TYPE "orderPaymentStatus" AS ENUM ('NO_PAYMENT', 'PARTIAL_PAYMENT', 'FULL_PAYMENT');
@@ -34,6 +34,7 @@ CREATE TABLE "User" (
     "role" "Role" NOT NULL,
     "lastActive" TIMESTAMP(3),
     "profilePicture" TEXT,
+    "status" TEXT DEFAULT 'Offline',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -44,7 +45,7 @@ CREATE TABLE "User" (
 CREATE TABLE "Order" (
     "InvoiceId" SERIAL NOT NULL,
     "branch" TEXT NOT NULL,
-    "status" "orderStatus" NOT NULL DEFAULT 'confirmed',
+    "status" "orderStatus" NOT NULL DEFAULT 'holding',
     "orderedFrom" TEXT DEFAULT 'SHOP',
     "customerId" TEXT NOT NULL,
     "customerName" TEXT NOT NULL,
@@ -103,6 +104,9 @@ CREATE TABLE "Transactions" (
 CREATE TABLE "SalesPerson" (
     "id" TEXT NOT NULL,
     "name" TEXT NOT NULL,
+    "contact" TEXT NOT NULL,
+    "areaCode" TEXT NOT NULL DEFAULT '+971',
+    "isActive" BOOLEAN NOT NULL DEFAULT true,
     "totalOrders" INTEGER NOT NULL DEFAULT 0,
     "totalSalesAmount" DOUBLE PRECISION NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -438,7 +442,7 @@ ALTER TABLE "ProductRestock" ADD CONSTRAINT "ProductRestock_inventoryId_fkey" FO
 ALTER TABLE "FabricInventory" ADD CONSTRAINT "FabricInventory_supplierId_fkey" FOREIGN KEY ("supplierId") REFERENCES "Supplier"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Fabric" ADD CONSTRAINT "Fabric_itemId_fkey" FOREIGN KEY ("itemId") REFERENCES "ProductInventory"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "Fabric" ADD CONSTRAINT "Fabric_itemId_fkey" FOREIGN KEY ("itemId") REFERENCES "Service"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Fabric" ADD CONSTRAINT "Fabric_orderInvoiceId_fkey" FOREIGN KEY ("orderInvoiceId") REFERENCES "Order"("InvoiceId") ON DELETE RESTRICT ON UPDATE CASCADE;

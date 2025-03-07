@@ -27,6 +27,16 @@ export class RoleController {
         if (employee) {
             return { userType: "tailor" }
         }
+
+        const salesman = await prisma.salesPerson.findFirst({
+            where: {
+                id: req.userId
+            }
+        });
+
+        if (salesman) {
+            return { userType: "salesman" }
+        }
     }
 
     @Get()

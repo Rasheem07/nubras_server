@@ -35,7 +35,7 @@ export class ServiceService {
 
 
     async getSections() {
-        return await prisma.section.findMany();
+        return await prisma.section.findMany({include: {products: true}});
     }
 
 
