@@ -27,11 +27,10 @@ export class AuthService {
     });
 
 
-
     if (!user) {
       throw new HttpException({ message: 'You are not authorized to access this application! Please contact your administrator.', type: 'error' }, HttpStatus.UNAUTHORIZED);
     }
-    
+
     if (user.status === "Revoked") {
       throw new HttpException({ message: 'You have been revoked by the administrator! Please contact your administrator', type: 'error' }, HttpStatus.FORBIDDEN)
     }
@@ -59,6 +58,7 @@ export class AuthService {
 
     return { type: 'success', message: 'OTP sent successfully', statusCode: HttpStatus.OK };
   }
+
   async salesmanLogin(contact: string): Promise<{ type?: string; message?: string, statusCode?: number, accessToken?: string, refreshToken?: string }> {
 
 
@@ -75,7 +75,7 @@ export class AuthService {
     if (!user) {
       throw new HttpException({ message: 'You are not authorized to access this application! Please contact your administrator.', type: 'error' }, HttpStatus.UNAUTHORIZED);
     }
-    
+
     if (!user.isActive) {
       throw new HttpException({ message: 'You have been revoked by the administrator! Please contact your administrator', type: 'error' }, HttpStatus.FORBIDDEN)
     }
@@ -132,7 +132,7 @@ export class AuthService {
 
     return { type: 'success', message: 'User created successfully', statusCode: HttpStatus.CREATED };
   }
-  
+
   async Register(username: string, contact: string, areaCode: string): Promise<{ type?: string; message?: string, statusCode?: number, accessToken?: string, refreshToken?: string }> {
 
 
@@ -200,8 +200,8 @@ export class AuthService {
     });
 
 
-    const token = jwt.sign({type: 'admin', id: existingUser?.id, role: existingUser?.role }, process.env.JWT_SECRET, { expiresIn: '15m' });
-    const refreshToken = jwt.sign({type: 'admin', id: existingUser?.id, role: existingUser?.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ type: 'admin', id: existingUser?.id, role: existingUser?.role }, process.env.JWT_SECRET, { expiresIn: '15m' });
+    const refreshToken = jwt.sign({ type: 'admin', id: existingUser?.id, role: existingUser?.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
 
 
     return { accessToken: token, refreshToken: refreshToken };
@@ -367,8 +367,8 @@ export class AuthService {
       },
     });
 
-    const token = jwt.sign({ type: 'tailor',id: exitingTailor?.id, role: exitingTailor?.role }, process.env.JWT_SECRET, { expiresIn: '15m' });
-    const refreshToken = jwt.sign({ type: 'tailor',id: exitingTailor?.id, role: exitingTailor?.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ type: 'tailor', id: exitingTailor?.id, role: exitingTailor?.role }, process.env.JWT_SECRET, { expiresIn: '15m' });
+    const refreshToken = jwt.sign({ type: 'tailor', id: exitingTailor?.id, role: exitingTailor?.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
 
 
     return { accessToken: token, refreshToken: refreshToken };

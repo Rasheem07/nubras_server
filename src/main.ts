@@ -5,7 +5,7 @@ import * as cookieParser from 'cookie-parser';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  app.enableCors({ origin: 'https://alnubrasstudio.com', credentials: true });
+  app.enableCors({ origin: ['https://alnubrasstudio.com', 'http://alnubras.dyndns.org:8080'], credentials: true });
 
   app.use(cookieParser());
   // somewhere in your initialization file
